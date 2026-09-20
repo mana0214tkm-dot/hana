@@ -1,12 +1,19 @@
 import { NextResponse } from 'next/server'
 import { getDb } from '@/lib/db'
 import { rowToLogEntry, type LogRow } from '@/lib/logRow'
-import { getPillar, getCategory } from '@/lib/pillars'
+import { PILLARS, getPillar, getCategory } from '@/lib/pillars'
 import { todayStr } from '@/lib/utils'
 import type { PillarId } from '@/types'
 
 // 記録は毎回サーバー(Turso/libSQL)から取得するため静的化しない。
 export const dynamic = 'force-dynamic'
+
+// UI側は最大4枚・900px圧縮(image.ts)だが、APIを直接叩かれた場合の
+// ストレージ枯渇/DoSを防ぐため、サーバー側でも上限を強制する。
+const MAX_PHOTOS = 4
+const MAX_PHOTO_DATA_URL_LENGTH = 2_000_000 // 約1.4MB相当(圧縮後の想定サイズに余裕を持たせた上限)
+const MAX_TITLE_LENGTH = 200
+const MAX_NOTE_LENGTH = 4000
 
 interface PhotoRow {
   log_id: number
@@ -62,9 +69,30 @@ export async function POST(request: Request) {
   if (!pillar || !category) {
     return NextResponse.json({ error: 'pillar と category は必須です' }, { status: 400 })
   }
+  if (!PILLARS.some(p => p.id === pillar)) {
+    return NextResponse.json({ error: '不正な pillar です' }, { status: 400 })
+  }
 
   const pillarInfo = getPillar(pillar)
+  if (!pillarInfo.categories.some(c => c.id === category)) {
+    return NextResponse.json({ error: '不正な category です' }, { status: 400 })
+  }
   const catInfo = getCategory(pillarInfo, category)
+
+  if (title !== undefined && (typeof title !== 'string' || title.length > MAX_TITLE_LENGTH)) {
+    return NextResponse.json({ error: `title は${MAX_TITLE_LENGTH}文字以内の文字列である必要があります` }, { status: 400 })
+  }
+  if (note !== undefined && (typeof note !== 'string' || note.length > MAX_NOTE_LENGTH)) {
+    return NextResponse.json({ error: `note は${MAX_NOTE_LENGTH}文字以内の文字列である必要があります` }, { status: 400 })
+  }
+  if (photos !== undefined) {
+    if (!Array.isArray(photos) || photos.length > MAX_PHOTOS) {
+      return NextResponse.json({ error: `photos は最大${MAX_PHOTOS}枚までです` }, { status: 400 })
+    }
+    if (photos.some(p => typeof p !== 'string' || p.length > MAX_PHOTO_DATA_URL_LENGTH || !p.startsWith('data:image/'))) {
+      return NextResponse.json({ error: '不正な photos データです' }, { status: 400 })
+    }
+  }
 
   const date = body.date || todayStr()
   const createdAt = body.createdAt ?? Date.now()
